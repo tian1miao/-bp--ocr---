@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>王者荣耀 BP 助手</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- 引入前端图像 Hash 库，用于纯前端识别 -->
+  <script src="https://cdn.jsdelivr.net/npm/blockhash-core@0.1.0/index.min.js"></script>
+</head>
+<body>
+  <div class="container">
+    <h1>王者荣耀 BP 助手</h1>
+
+    <!-- 模式一：BP 咨询 -->
+    <div class="card">
+      <h3>模式一：BP 咨询 (残局推荐)</h3>
+      <div class="hint">上传未选完的 BP 截图，系统自动识别并推荐我方剩余分路优选英雄。</div>
+      <div style="display: flex; gap: 10px; margin-top: 10px;">
+        <input type="file" id="upload-consult" accept="image/png, image/jpeg" style="flex: 1; padding: 5px;" />
+        <button id="btn-consult" class="btn primary" style="margin-top: 0; width: 100px;">咨询推荐</button>
+      </div>
+    </div>
+
+    <!-- 模式二：胜率预测 -->
+    <div class="card">
+      <h3>模式二：胜率预测 (终局分析)</h3>
+      <div class="hint">上传10人已选定的截图，并选择你玩的分路，获取深度对局分析。</div>
+      <div class="form-row" style="margin-top: 10px;">
+        <label style="width: 80px;">你的分路</label>
+        <select id="my-pos-select">
+          <option value="">请选择</option>
+          <option>对抗路</option>
+          <option>中路</option>
+          <option>发育路</option>
+          <option>打野</option>
+          <option>辅助</option>
+        </select>
+      </div>
+      <div style="display: flex; gap: 10px;">
+        <input type="file" id="upload-predict" accept="image/png, image/jpeg" style="flex: 1; padding: 5px;" />
+        <button id="btn-predict" class="btn" style="margin-top: 0; width: 100px; background: #2e7d32; color: white;">胜率预测</button>
+      </div>
+    </div>
+
+    <!-- 状态提示 -->
+    <div class="status" id="status-text" style="font-weight: bold; margin: 10px 0; color: #e65100; text-align: center;"></div>
+
+    <!-- 推荐区 (仅用于BP咨询) -->
+    <div class="card" id="rec-card" style="display:none;">
+      <h3>推荐英雄</h3>
+      <div id="rec-content"></div>
+    </div>
+
+    <!-- 日志/分析区 -->
+    <div class="card" id="log-card">
+      <h3>日志 / 分析</h3>
+      <pre id="log-output"></pre>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
