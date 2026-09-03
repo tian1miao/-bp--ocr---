@@ -1,78 +1,80 @@
 import json
 import requests
+import hashlib
+import os
+import time
 from PIL import Image, ImageDraw
 from io import BytesIO
-import imagehash
-import time
-import os
 
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                  '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-}
-
+HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
 OFFICIAL_HEROLIST_URL = 'https://pvp.qq.com/web201605/js/herolist.json'
 OFFICIAL_AVATAR_URL = 'https://game.gtimg.cn/images/yxzj/img201606/heroimg/{eid}/{eid}.jpg'
 
-MASK_REGIONS = [
-    (0.00, 0.00, 0.19, 0.32),
-    (0.26, 0.72, 0.71, 1.00),
-]
+MASK_REGIONS = [(0.00, 0.00, 0.19, 0.32), (0.26, 0.72, 0.71, 1.00)]
 GRAY_VALUE = 128
 VARIANT_SCALES = [1.00, 0.92, 0.85, 0.78, 0.70]
+CACHE_DIR = "data"
 
-def center_crop(img, scale):
-    if scale >= 1.0: return img
-    w, h = img.size
-    nw, nh = int(w * scale), int(h * scale)
-    l, t = (w - nw) // 2, (h - nh) // 2
-    return img.crop((l, t, l + nw, t + nh))
+# ================= 纯手工同构 dHash (替代 imagehash) =================
+def calc_dhash(img):
+    """缩放至 9x8，转灰度，左右相邻像素比较，生成 64 位指纹转 16 进制"""
+    img = img.convert("L").resize((9, 8), Image.Resampling.BILINEAR)
+    pixels = list(img.getdata())
+    hex_str = ""
+    for r in range(8):
+        bits = "".join('1' if pixels[r*9 + c] > pixels[r*9 + c + 1] else '0' for c in range(8))
+        hex_str += f"{int(bits, 2):02x}"
+    return hex_str
 
-def apply_mask(img):
-    img = img.convert("RGB").copy()
+def apply_mask_and_crop(img, scale):
+    if scale < 1.0:
+        w, h = img.size
+        nw, nh = int(w * scale), int(h * scale)
+        l, t = (w - nw) // 2, (h - nh) // 2
+        img = img.crop((l, t, l + nw, t + nh))
+    
+    img = img.convert("RGB")
     w, h = img.size
     draw = ImageDraw.Draw(img)
     for (l, t, r, b) in MASK_REGIONS:
-        draw.rectangle(
-            (int(w * l), int(h * t), int(w * r), int(h * b)),
-            fill=(GRAY_VALUE, GRAY_VALUE, GRAY_VALUE),
-        )
+        draw.rectangle((int(w * l), int(h * t), int(w * r), int(h * b)), fill=(GRAY_VALUE,)*3)
     return img
 
-def download_image(url, retries=3):
-    for attempt in range(retries):
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=(3, 7))
-            resp.raise_for_status()
-            return Image.open(BytesIO(resp.content)).convert("RGB")
-        except Exception:
-            time.sleep(1)
-    return None
+def main():
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    md5_file, hash_file = f"{CACHE_DIR}/avatar_md5.json", f"{CACHE_DIR}/hero_hashes.json"
+    
+    avatar_md5 = json.load(open(md5_file)) if os.path.exists(md5_file) else {}
+    hero_hashes = json.load(open(hash_file)) if os.path.exists(hash_file) else {}
+    
+    heroes = requests.get(OFFICIAL_HEROLIST_URL, headers=HEADERS).json()
+    updated = 0
 
-def build_hash_library():
-    print("开始生成英雄 pHash 指纹库...")
-    try:
-        heroes = requests.get(OFFICIAL_HEROLIST_URL, headers=HEADERS).json()
-    except:
-        return print("官方列表获取失败")
-
-    hero_hashes = {}
     for idx, h in enumerate(heroes, 1):
         hero_id, name = str(h['ename']), h.get('cname', '未知')
-        img = download_image(OFFICIAL_AVATAR_URL.format(eid=hero_id))
-        if not img: continue
-        
-        variants = []
-        for scale in VARIANT_SCALES:
-            masked = apply_mask(center_crop(img, scale))
-            variants.append(str(imagehash.phash(masked, hash_size=8, highfreq_factor=4)))
-        hero_hashes[hero_id] = variants
-        print(f"[{idx}/{len(heroes)}] {name} 指纹生成完毕")
+        for _ in range(3):
+            try:
+                img_bytes = requests.get(OFFICIAL_AVATAR_URL.format(eid=hero_id), headers=HEADERS, timeout=5).content
+                break
+            except: time.sleep(1)
+        else: continue
+            
+        current_md5 = hashlib.md5(img_bytes).hexdigest()
+        if hero_id in avatar_md5 and avatar_md5[hero_id] == current_md5 and hero_id in hero_hashes:
+            continue
+            
+        print(f"[{idx}/{len(heroes)}] 更新: {name}")
+        img = Image.open(BytesIO(img_bytes)).convert("RGB")
+        hero_hashes[hero_id] = [calc_dhash(apply_mask_and_crop(img, s)) for s in VARIANT_SCALES]
+        avatar_md5[hero_id] = current_md5
+        updated += 1
 
-    os.makedirs("data", exist_ok=True)
-    with open("data/hero_hashes.json", "w", encoding="utf-8") as f:
-        json.dump(hero_hashes, f, indent=4)
-    print("✅ 指纹库已保存至 data/hero_hashes.json")
+    if updated > 0:
+        json.dump(hero_hashes, open(hash_file, "w"), indent=2)
+        json.dump(avatar_md5, open(md5_file, "w"), indent=2)
+        print(f"✅ 更新了 {updated} 个英雄的指纹。")
+    else:
+        print("✨ 无需更新。")
 
 if __name__ == "__main__":
-    build_hash_library()
+    main()
