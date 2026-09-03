@@ -1,61 +1,17 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  background: #f5f5f5;
-  padding: 10px;
-  color: #333;
-}
+body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f5f5f5; padding: 10px; color: #333; }
 .container { max-width: 500px; margin: 0 auto; }
 h1 { text-align: center; margin: 10px 0 20px; font-size: 24px; }
-.card {
-  background: white;
-  border-radius: 12px;
-  padding: 15px;
-  margin-bottom: 15px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-}
+.card { background: white; border-radius: 12px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
 .form-row { display: flex; align-items: center; margin-bottom: 10px; }
-.form-row label { font-weight: bold; }
-select, input[type="file"] {
-  flex: 1;
-  padding: 10px;
-  border: 1px solid #ccc;
-  border-radius: 8px;
-  font-size: 14px;
-}
-.btn {
-  display: block;
-  width: 100%;
-  padding: 12px;
-  border: none;
-  border-radius: 8px;
-  background: #2e7d32;
-  color: white;
-  font-size: 16px;
-  cursor: pointer;
-}
-.btn.primary { background: #1976d2; }
+.form-row label { font-weight: bold; font-size: 14px; }
+select, input[type="file"] { flex: 1; padding: 8px; border: 1px solid #ccc; border-radius: 8px; font-size: 14px; }
+.btn { display: block; width: 100%; padding: 10px; border: none; border-radius: 8px; font-size: 15px; cursor: pointer; transition: opacity 0.2s; }
+.btn.primary { background: #1976d2; color: white; }
 .btn:active { opacity: 0.8; }
-.hint { color: #777; font-size: 12px; margin-top: 5px; margin-bottom: 10px;}
-#rec-content { max-height: 300px; overflow-y: auto; }
-#rec-content .hero-item { border-bottom: 1px solid #eee; padding: 8px 0; }
-.hero-item-main {
-  font-weight: bold;
-  font-size: 17px;
-  color: #000;
-}
-.hero-item-detail {
-  font-size: 12px;
-  color: #555;
-  margin-left: 10px;
-}
-#log-output {
-  white-space: pre-wrap;
-  word-wrap: break-word;
-  font-size: 13px;
-  background: #fafafa;
-  padding: 10px;
-  border-radius: 8px;
-  max-height: 400px;
-  overflow-y: auto;
-}
+.hint { color: #777; font-size: 12px; margin-top: 5px; }
+.status { font-weight: bold; margin: 10px 0; color: #e65100; text-align: center; font-size: 14px; }
+#rec-content { max-height: 300px; overflow-y: auto; font-size: 14px; }
+.hero-group { margin-top: 10px; font-weight: bold; color: #d32f2f; border-bottom: 1px dashed #ccc; padding-bottom: 4px; }
+.hero-item { padding: 6px 0; font-size: 15px; color: #000; }
+#log-output { white-space: pre-wrap; word-wrap: break-word; font-size: 13px; background: #fafafa; padding: 10px; border-radius: 8px; max-height: 400px; overflow-y: auto; color: #444; }
