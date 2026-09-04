@@ -91,7 +91,7 @@ function dct2D(matrix) {
   return finalMatrix;
 }
 
-// ================= 自实现 pHash（输入为已灰度化的 32x32 ImageData） =================
+// ================= 自实现 pHash（输入为缩放后的 32x32 彩色 ImageData） =================
 function computePhash(imgData) {
   if (imgData.width !== 32 || imgData.height !== 32) {
     throw new Error("pHash 需要 32x32 的输入图像");
@@ -99,8 +99,11 @@ function computePhash(imgData) {
   const pixels = imgData.data;
   const gray = new Float32Array(32 * 32);
   for (let i = 0; i < 32 * 32; i++) {
-    // 图像已经是灰度，直接取 R 通道（R=G=B）
-    gray[i] = pixels[i * 4];
+    // 在缩放后的彩色数据上计算灰度（与 PIL convert("L") 公式一致）
+    const r = pixels[i * 4];
+    const g = pixels[i * 4 + 1];
+    const b = pixels[i * 4 + 2];
+    gray[i] = Math.floor((r * 299 + g * 587 + b * 114) / 1000);
   }
 
   const matrix = [];
@@ -137,7 +140,7 @@ function computePhash(imgData) {
   return hash;
 }
 
-// ================= 裁剪 + 遮罩 + 灰度化 + 缩放 + pHash =================
+// ================= 裁剪 + 遮罩 + 缩放（彩色） + pHash =================
 function cropAndPhash(ctx, imgW, imgH, isLeft, index, scale, dx, dy) {
   // 1. 基础裁剪框
   let side = Math.max(24, Math.round(imgH * BP_PARAMS.SIDE));
@@ -192,38 +195,19 @@ function cropAndPhash(ctx, imgW, imgH, isLeft, index, scale, dx, dy) {
       }
     }
   });
+  cropCtx.putImageData(cropData, 0, 0);
 
-  // 6. 转为灰度图（与 PIL convert("L") 一致）
-  const grayData = new Uint8ClampedArray(cropData.data.length);
-  for (let i = 0; i < cropData.data.length; i += 4) {
-    const r = cropData.data[i];
-    const g = cropData.data[i+1];
-    const b = cropData.data[i+2];
-    const gray = Math.floor((r * 299 + g * 587 + b * 114) / 1000);
-    grayData[i] = gray;
-    grayData[i+1] = gray;
-    grayData[i+2] = gray;
-    grayData[i+3] = 255; // alpha 不透明
-  }
-
-  // 创建灰度画布
-  const grayCanvas = document.createElement('canvas');
-  grayCanvas.width = final_w;
-  grayCanvas.height = final_h;
-  const grayCtx = grayCanvas.getContext('2d');
-  grayCtx.putImageData(new ImageData(grayData, final_w, final_h), 0, 0);
-
-  // 7. 将灰度画布缩放到 32x32（高质量插值，对应 PIL ANTIALIAS）
+  // 6. 直接缩放到 32x32（彩色，高质量插值）
   const resizeCanvas = document.createElement('canvas');
   resizeCanvas.width = 32;
   resizeCanvas.height = 32;
   const resizeCtx = resizeCanvas.getContext('2d', { willReadFrequently: true });
   resizeCtx.imageSmoothingEnabled = true;
   resizeCtx.imageSmoothingQuality = 'high';
-  resizeCtx.drawImage(grayCanvas, 0, 0, final_w, final_h, 0, 0, 32, 32);
+  resizeCtx.drawImage(cropCanvas, 0, 0, final_w, final_h, 0, 0, 32, 32);
   const resizedData = resizeCtx.getImageData(0, 0, 32, 32);
 
-  // 8. 计算 pHash
+  // 7. 计算 pHash（内部会在缩放后的彩色数据上计算灰度）
   return computePhash(resizedData);
 }
 
