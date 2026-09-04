@@ -10,27 +10,44 @@ function log(msg) {
   el.scrollTop = el.scrollHeight;
 }
 
-// ================= 高精度前端特征识别引擎 (含 Phase 2 兜底抢救) =================
+// ================= 高精度前端特征识别引擎 =================
 const BP_PARAMS = {
   PICK_Y: [0.171, 0.330, 0.491, 0.652, 0.814],
   PICK_X_L: 0.192, PICK_X_R: 0.194, SIDE: 0.118,
   MASK: [[0.00, 0.00, 0.19, 0.32], [0.26, 0.72, 0.71, 1.00]],
-  MATCH_THRESHOLD: 14, // 最终容错阈值
-  PHASE1_PASS: 10      // 小于等于10直接通过，大于10触发 Phase2 抢救
+  MATCH_THRESHOLD: 14,
+  PHASE1_PASS: 10
 };
 
-function calcDHash(ctx, imgW, imgH, isLeft, index, isPhase2 = false) {
+const SEARCH_GRIDS = {
+  phase1: {
+    scales: [1.00, 0.92, 0.85], 
+    dxs: [-0.04, 0, 0.04],
+    dys: [-0.04, 0, 0.04]
+  },
+  phase2: {
+    scales: [0.78, 0.70],       
+    dxs: [-0.05, 0, 0.05],
+    dys: [-0.16, -0.13, -0.10]  
+  }
+};
+
+function calcDHash(ctx, imgW, imgH, isLeft, index, scaleOverride = 1.0, dxOverride = 0, dyOverride = 0) {
   let side = Math.max(24, Math.round(imgH * BP_PARAMS.SIDE));
   let cx = isLeft ? Math.round(imgH * BP_PARAMS.PICK_X_L) : imgW - Math.round(imgH * BP_PARAMS.PICK_X_R);
   let cy = Math.round(imgH * BP_PARAMS.PICK_Y[index]);
 
-  // 【核心修复】：Phase 2 兜底抢救，向内缩小取景框 0.75，并向上平移 0.12，完美避开 UI 污染
-  if (isPhase2) {
-    side = Math.round(side * 0.75);
-    cy = cy - Math.round(side * 0.12);
-  }
+  side = Math.round(side * scaleOverride);
+  cx = cx + Math.round(side * dxOverride);
+  cy = cy + Math.round(side * dyOverride);
 
-  const rect = { l: Math.max(0, cx - Math.floor(side/2)), t: Math.max(0, cy - Math.floor(side/2)), w: side, h: side };
+  const rect = { 
+    l: Math.max(0, cx - Math.floor(side/2)), 
+    t: Math.max(0, cy - Math.floor(side/2)), 
+    w: side, 
+    h: side 
+  };
+  
   const oData = ctx.getImageData(rect.l, rect.t, rect.w, rect.h);
   
   BP_PARAMS.MASK.forEach(([ml, mt, mr, mb]) => {
@@ -86,6 +103,27 @@ function hamming(h1, h2) {
   return dist;
 }
 
+function runGridSearch(ctx, imgW, imgH, isLeft, index, gridParams) {
+  let bestId = null, minD = 999;
+  for (let s of gridParams.scales) {
+    for (let dx of gridParams.dxs) {
+      for (let dy of gridParams.dys) {
+        let hash = calcDHash(ctx, imgW, imgH, isLeft, index, s, dx, dy);
+        for (const [name, variants] of Object.entries(hashLib)) {
+          for (let vh of variants) {
+            const d = hamming(hash, vh);
+            if (d < minD) { 
+              minD = d; bestId = name; 
+              if (minD <= 2) return { id: bestId, dist: minD };
+            }
+          }
+        }
+      }
+    }
+  }
+  return { id: bestId, dist: minD };
+}
+
 async function recognizeImg(img) {
   const canvas = document.createElement('canvas');
   canvas.width = img.width; canvas.height = img.height;
@@ -97,21 +135,15 @@ async function recognizeImg(img) {
   
   for (let i = 0; i < 5; i++) {
     const matchSlot = (isLeft) => {
-      let hashP1 = calcDHash(ctx, img.width, img.height, isLeft, i, false);
-      let bestId = null, minD = 999;
-      for (const [name, variants] of Object.entries(hashLib)) {
-        variants.forEach(vh => { const d = hamming(hashP1, vh); if (d < minD) { minD = d; bestId = name; } });
-      }
-      // Phase 2 兜底抢救触发
-      if (minD > BP_PARAMS.PHASE1_PASS) {
-        let hashP2 = calcDHash(ctx, img.width, img.height, isLeft, i, true);
-        let bestId2 = null, minD2 = 999;
-        for (const [name, variants] of Object.entries(hashLib)) {
-          variants.forEach(vh => { const d = hamming(hashP2, vh); if (d < minD2) { minD2 = d; bestId2 = name; } });
+      let res = runGridSearch(ctx, img.width, img.height, isLeft, i, SEARCH_GRIDS.phase1);
+      if (res.dist > BP_PARAMS.PHASE1_PASS) {
+        let p2Res = runGridSearch(ctx, img.width, img.height, isLeft, i, SEARCH_GRIDS.phase2);
+        if (p2Res.dist < res.dist) {
+          log(`  [Phase2网格抢救] 原最佳: ${res.id}(${res.dist}) -> 成功更正为: ${p2Res.id}(${p2Res.dist})`);
+          res = p2Res;
         }
-        if (minD2 < minD) { minD = minD2; bestId = bestId2; }
       }
-      return { id: bestId, dist: minD };
+      return res;
     };
 
     const lRes = matchSlot(true), rRes = matchSlot(false);
@@ -143,7 +175,6 @@ function assignPos(teamNames) {
   return team;
 }
 
-// 获取胜率 (支持白板 Dummy 控制变量法)
 function getWr(idStr, pos, period) {
   if (idStr === "__DUMMY__") return 0.5;
   if (period) {
@@ -157,7 +188,6 @@ function getWr(idStr, pos, period) {
   return wr ? Math.max(0.01, Math.min(0.99, (wr > 1 ? wr/100 : wr))) : 0.5;
 }
 
-// 获取原始数值 (用于输出展示)
 function getRawIndex(name, targetName, type) {
   if (name === "__DUMMY__" || targetName === "__DUMMY__") return 0;
   const ana = anaCache[heroDict[name]] || { counters: [], counteredBy: [], goodSynergies: [], badSynergies: [] };
@@ -174,7 +204,6 @@ function getRawIndex(name, targetName, type) {
   }
 }
 
-// 计算底层加权特征 (用于预测算法)
 function calcFeatures(name, pos, wr, myT, enT) {
   if (name === "__DUMMY__") return [0, 0];
   let pAdv = [], nAdv = 0;
@@ -224,15 +253,20 @@ async function handleUpload(mode) {
   if (mode === 'predict' && !(userPosition = document.getElementById('my-pos-select').value)) return alert("模式二必须选择你的分路！");
 
   isCalculating = true;
-  document.getElementById('status-text').textContent = '🔄 极速分析中...';
+  document.getElementById('status-text').textContent = '🔄 极速分析中... (深度网格寻优运行中)';
   document.getElementById('log-output').textContent = '';
 
   try {
     const img = new Image(); img.src = URL.createObjectURL(fileInput.files[0]);
     await new Promise(r => img.onload = r);
+    await new Promise(r => setTimeout(r, 50)); 
 
     const { leftNames, rightNames } = await recognizeImg(img);
     myTeam = assignPos(leftNames); enemyTeam = assignPos(rightNames);
+    
+    // 【完美还原1】：对全局阵容数据按照标准分路（对抗路->辅助）重新排序
+    myTeam.sort((a, b) => POSITIONS.indexOf(a[1]) - POSITIONS.indexOf(b[1]));
+    enemyTeam.sort((a, b) => POSITIONS.indexOf(a[1]) - POSITIONS.indexOf(b[1]));
     myPositions = myTeam.map(h => h[1]);
 
     if (mode === 'consult') await showRecs();
@@ -261,13 +295,12 @@ async function showRecs() {
     }
     if (res.length) {
       html += `<div class="hero-group">补位: ${pos}</div>`;
-      res.sort((a,b)=>b.score-a.score).slice(0,3).forEach(r => html += `<div class="hero-item">${r.name} [融入胜率: ${r.score.toFixed(2)}%]</div>`);
+      res.sort((a,b)=>b.score-a.score).filter(r => r.score >= 50).forEach(r => html += `<div class="hero-item">${r.name} [融入胜率: ${r.score.toFixed(2)}%]</div>`);
     }
   }
   rc.innerHTML = html;
 }
 
-// 完美还原原版排版与控制变量法深度评估
 async function showFinal() {
   const finalWr = predictWr(myTeam, enemyTeam);
   const wrE = predictWr(myTeam, enemyTeam, 'e');
@@ -292,7 +325,6 @@ async function showFinal() {
     if (!hName) continue;
     log(`\n【已选】${hName} (位置: ${hPos})`);
     
-    // 控制变量法算单人贡献
     const myTeamWithoutMe = myTeam.map(h => h[0] === hName ? ["__DUMMY__", h[1]] : h);
     const wrWithoutMe = predictWr(myTeamWithoutMe, enemyTeam);
     const contribution = finalWr - wrWithoutMe;
@@ -306,7 +338,6 @@ async function showFinal() {
     
     log(`   📈 对总胜率影响: ${formatSign(contribution)} [${tag}]`);
 
-    // 对位克制展示 (读取原汁原味 API index)
     enemyTeam.forEach(([eName, ePos]) => {
       if (!eName) return;
       const rawV = getRawIndex(hName, eName, 'counter');
@@ -316,24 +347,27 @@ async function showFinal() {
       else log(`   对位 ${eName}: 无克制 指数 0.00%${samePosStr}`);
     });
 
-    // 队友配合展示
     myTeam.forEach(([tName, tPos]) => {
       if (!tName || tName === hName) return;
       const rawV = getRawIndex(hName, tName, 'synergy');
       if (rawV > 0) log(`   配合 ${tName}: 优异 指数 ${formatSign(rawV)}`);
       else if (rawV < 0) log(`   配合 ${tName}: 冲突 指数 ${formatSign(rawV)}`);
+      // 【完美还原3】：清空这里的 else 分支，彻底隐藏 0.00% 的队友干扰数据
     });
   }
 
-  // 专属战术板输出 (所有 >10% 的装备与分时段)
   const uH = myTeam.find(h => h[1] === userPosition);
   if (uH) {
     const idStr = String(heroDict[uH[0]]);
     log(`\n【出装推荐】${uH[0]} (${uH[1]})`);
     const equips = (equipCache[idStr] || {})[uH[1]] || [];
-    if (equips.length) {
-      equips.forEach(e => log(`${e.equipmentName} 登场率:${e.pickRate.toFixed(2)}% 胜率:${e.winRate.toFixed(2)}%`));
-    } else log("暂无出装数据");
+    
+    // 【完美还原2】：大于10%过滤的同时，强制按登场率做降序排序
+    const validEquips = equips.filter(e => e.pickRate >= 10).sort((a, b) => b.pickRate - a.pickRate);
+    
+    if (validEquips.length) {
+      validEquips.forEach(e => log(`${e.equipmentName} 登场率:${e.pickRate.toFixed(2)}% 胜率:${e.winRate.toFixed(2)}%`));
+    } else log("暂无出场率大于10%的有效出装数据");
 
     log(`\n【强势期分析】${uH[0]}`);
     const periods = periodCache[idStr] || [];
