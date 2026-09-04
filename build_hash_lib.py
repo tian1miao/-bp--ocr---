@@ -1,12 +1,8 @@
-import json
-import requests
-import hashlib
-import os
-import time
+import json, requests, hashlib, os, time
 from PIL import Image, ImageDraw
 from io import BytesIO
 
-HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
+HEADERS = {'User-Agent': 'Mozilla/5.0'}
 OFFICIAL_HEROLIST_URL = 'https://pvp.qq.com/web201605/js/herolist.json'
 OFFICIAL_AVATAR_URL = 'https://game.gtimg.cn/images/yxzj/img201606/heroimg/{eid}/{eid}.jpg'
 
@@ -15,9 +11,7 @@ GRAY_VALUE = 128
 VARIANT_SCALES = [1.00, 0.92, 0.85, 0.78, 0.70]
 CACHE_DIR = "data"
 
-# ================= 纯手工同构 dHash (替代 imagehash) =================
 def calc_dhash(img):
-    """缩放至 9x8，转灰度，左右相邻像素比较，生成 64 位指纹转 16 进制"""
     img = img.convert("L").resize((9, 8), Image.Resampling.BILINEAR)
     pixels = list(img.getdata())
     hex_str = ""
@@ -32,7 +26,6 @@ def apply_mask_and_crop(img, scale):
         nw, nh = int(w * scale), int(h * scale)
         l, t = (w - nw) // 2, (h - nh) // 2
         img = img.crop((l, t, l + nw, t + nh))
-    
     img = img.convert("RGB")
     w, h = img.size
     draw = ImageDraw.Draw(img)
@@ -46,7 +39,6 @@ def main():
     
     avatar_md5 = json.load(open(md5_file)) if os.path.exists(md5_file) else {}
     hero_hashes = json.load(open(hash_file)) if os.path.exists(hash_file) else {}
-    
     heroes = requests.get(OFFICIAL_HEROLIST_URL, headers=HEADERS).json()
     updated = 0
 
@@ -60,21 +52,20 @@ def main():
         else: continue
             
         current_md5 = hashlib.md5(img_bytes).hexdigest()
-        if hero_id in avatar_md5 and avatar_md5[hero_id] == current_md5 and hero_id in hero_hashes:
+        # 注意这里：用 name 替代了 hero_id
+        if name in avatar_md5 and avatar_md5[name] == current_md5 and name in hero_hashes:
             continue
             
         print(f"[{idx}/{len(heroes)}] 更新: {name}")
         img = Image.open(BytesIO(img_bytes)).convert("RGB")
-        hero_hashes[hero_id] = [calc_dhash(apply_mask_and_crop(img, s)) for s in VARIANT_SCALES]
-        avatar_md5[hero_id] = current_md5
+        hero_hashes[name] = [calc_dhash(apply_mask_and_crop(img, s)) for s in VARIANT_SCALES]
+        avatar_md5[name] = current_md5
         updated += 1
 
     if updated > 0:
-        json.dump(hero_hashes, open(hash_file, "w"), indent=2)
-        json.dump(avatar_md5, open(md5_file, "w"), indent=2)
-        print(f"✅ 更新了 {updated} 个英雄的指纹。")
-    else:
-        print("✨ 无需更新。")
+        json.dump(hero_hashes, open(hash_file, "w"), indent=2, ensure_ascii=False)
+        json.dump(avatar_md5, open(md5_file, "w"), indent=2, ensure_ascii=False)
+        print(f"✅ 更新了 {updated} 个英雄。")
 
 if __name__ == "__main__":
     main()
