@@ -10,7 +10,7 @@ function log(msg) {
   el.scrollTop = el.scrollHeight;
 }
 
-// ================= 识别参数 =================
+// ================= 识别参数（与 Python 成功版完全对齐） =================
 const BP_PARAMS = {
   PICK_Y: [0.171, 0.330, 0.491, 0.652, 0.814],
   PICK_X_L: 0.192, PICK_X_R: 0.194, SIDE: 0.118,
@@ -19,6 +19,7 @@ const BP_PARAMS = {
   PHASE1_PASS: 10
 };
 
+// 常规网格
 const PHASE1_GRID = [];
 for (const s of [0.85, 0.92, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25]) {
   for (const dx of [0.00, -0.03, 0.03]) {
@@ -28,6 +29,7 @@ for (const s of [0.85, 0.92, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25]) {
   }
 }
 
+// 兜底网格
 const PHASE2_GRID = [];
 for (const s of [0.75, 0.80]) {
   for (const dx of [0.00, 0.02, 0.04, 0.06, -0.02, -0.04, -0.06]) {
@@ -37,6 +39,7 @@ for (const s of [0.75, 0.80]) {
   }
 }
 
+// ================= 汉明距离 =================
 function hammingDistance(h1, h2) {
   const a = h1.toLowerCase().replace(/^0x/, '');
   const b = h2.toLowerCase().replace(/^0x/, '');
@@ -48,6 +51,7 @@ function hammingDistance(h1, h2) {
   return dist;
 }
 
+// ================= 一维 DCT =================
 function dct1D(arr) {
   const N = arr.length;
   const result = new Float32Array(N);
@@ -61,6 +65,7 @@ function dct1D(arr) {
   return result;
 }
 
+// ================= 二维 DCT =================
 function dct2D(matrix) {
   const N = matrix.length;
   const rowDct = [];
@@ -86,6 +91,7 @@ function dct2D(matrix) {
   return finalMatrix;
 }
 
+// ================= 自实现 pHash =================
 function computePhash(imgData) {
   if (imgData.width !== 32 || imgData.height !== 32) {
     throw new Error("pHash 需要 32x32 的输入图像");
@@ -109,12 +115,14 @@ function computePhash(imgData) {
   }
 
   const dctMatrix = dct2D(matrix);
+
   const lowFreq = [];
   for (let r = 0; r < 8; r++) {
     for (let c = 0; c < 8; c++) {
       lowFreq.push(dctMatrix[r][c]);
     }
   }
+
   const sorted = [...lowFreq].sort((a, b) => a - b);
   const median = (sorted[31] + sorted[32]) / 2.0;
 
@@ -131,6 +139,7 @@ function computePhash(imgData) {
   return hash;
 }
 
+// ================= 裁剪 + 遮罩 + 缩放 + pHash =================
 function cropAndPhash(ctx, imgW, imgH, isLeft, index, scale, dx, dy) {
   let side = Math.max(24, Math.round(imgH * BP_PARAMS.SIDE));
   let centerY = Math.round(imgH * BP_PARAMS.PICK_Y[index]);
@@ -194,7 +203,8 @@ function cropAndPhash(ctx, imgW, imgH, isLeft, index, scale, dx, dy) {
   return computePhash(resizedData);
 }
 
-function runGridSearch(ctx, imgW, imgH, isLeft, index, grid, debugLabel) {
+// ================= 网格搜索（返回英雄名字） =================
+function runGridSearch(ctx, imgW, imgH, isLeft, index, grid) {
   let bestId = null;
   let bestDist = 999;
   for (const { scale, dx, dy } of grid) {
@@ -206,14 +216,15 @@ function runGridSearch(ctx, imgW, imgH, isLeft, index, grid, debugLabel) {
         if (d < bestDist) {
           bestDist = d;
           bestId = heroId;
-          if (bestDist <= 2) return { id: bestId, dist: bestDist };
+          if (bestDist <= 2) return { id: bestId, dist: bestDist, name: idToName[bestId] || bestId };
         }
       }
     }
   }
-  return { id: bestId, dist: bestDist };
+  return { id: bestId, dist: bestDist, name: bestId ? (idToName[bestId] || bestId) : null };
 }
 
+// ================= 识别主流程 =================
 function recognizeImg(img) {
   const canvas = document.createElement('canvas');
   canvas.width = img.width;
@@ -222,37 +233,42 @@ function recognizeImg(img) {
   ctx.drawImage(img, 0, 0);
 
   log(`图片尺寸: ${img.width} x ${img.height}`);
-  log("--- 开始图像识别 (pHash) ---");
+  log("--- 开始图像识别 ---");
 
   const leftNames = [], rightNames = [];
   for (let i = 0; i < 5; i++) {
-    let lRes = runGridSearch(ctx, img.width, img.height, true, i, PHASE1_GRID, `左${i+1}常规`);
+    // 左槽位
+    let lRes = runGridSearch(ctx, img.width, img.height, true, i, PHASE1_GRID);
     if (lRes.dist > BP_PARAMS.PHASE1_PASS) {
-      const p2Res = runGridSearch(ctx, img.width, img.height, true, i, PHASE2_GRID, `左${i+1}兜底`);
+      const p2Res = runGridSearch(ctx, img.width, img.height, true, i, PHASE2_GRID);
       if (p2Res.dist < lRes.dist) lRes = p2Res;
     }
-    let rRes = runGridSearch(ctx, img.width, img.height, false, i, PHASE1_GRID, `右${i+1}常规`);
+    // 右槽位
+    let rRes = runGridSearch(ctx, img.width, img.height, false, i, PHASE1_GRID);
     if (rRes.dist > BP_PARAMS.PHASE1_PASS) {
-      const p2Res = runGridSearch(ctx, img.width, img.height, false, i, PHASE2_GRID, `右${i+1}兜底`);
+      const p2Res = runGridSearch(ctx, img.width, img.height, false, i, PHASE2_GRID);
       if (p2Res.dist < rRes.dist) rRes = p2Res;
     }
 
-    log(`左${i+1}: ${lRes.id} (${lRes.dist}) ${lRes.dist <= BP_PARAMS.MATCH_THRESHOLD ? '✅' : '❌'}`);
-    log(`右${i+1}: ${rRes.id} (${rRes.dist}) ${rRes.dist <= BP_PARAMS.MATCH_THRESHOLD ? '✅' : '❌'}`);
+    const lName = (lRes.dist <= BP_PARAMS.MATCH_THRESHOLD && lRes.name) ? lRes.name : null;
+    const rName = (rRes.dist <= BP_PARAMS.MATCH_THRESHOLD && rRes.name) ? rRes.name : null;
 
-    leftNames.push(lRes.dist <= BP_PARAMS.MATCH_THRESHOLD ? lRes.id : null);
-    rightNames.push(rRes.dist <= BP_PARAMS.MATCH_THRESHOLD ? rRes.id : null);
+    log(`左${i+1}: ${lName || '未识别'} (距离 ${lRes.dist}) ${lRes.dist <= BP_PARAMS.MATCH_THRESHOLD ? '✅' : '❌'}`);
+    log(`右${i+1}: ${rName || '未识别'} (距离 ${rRes.dist}) ${rRes.dist <= BP_PARAMS.MATCH_THRESHOLD ? '✅' : '❌'}`);
+
+    leftNames.push(lName);
+    rightNames.push(rName);
   }
+
   log("------------------------");
   return { leftNames, rightNames };
 }
 
-// ================= 胜率预测等函数（保持原逻辑，但需正确处理名字） =================
-function assignPos(teamIds) {
-  // teamIds 是英雄ID数组，需转换为名字
+// ================= 数据推演与胜率核心 =================
+function assignPos(teamNames) {
+  // teamNames 是英雄名字数组（可能包含 null）
   const team = [];
-  const prefs = teamIds.filter(id => id && idToName[id]).map(id => {
-    const name = idToName[id];
+  const prefs = teamNames.filter(n => n).map(name => {
     return { name, p: posCache[heroDict[name]] || {} };
   }).sort((a, b) => Math.max(0, ...Object.values(b.p)) - Math.max(0, ...Object.values(a.p)));
 
@@ -266,9 +282,6 @@ function assignPos(teamIds) {
   });
   return team;
 }
-
-// 其余函数（getWr, getRawIndex, calcFeatures, predictWr, formatSign）与之前相同，此处省略
-// 直接复制之前的完整函数即可
 
 function getWr(idStr, pos, period) {
   if (idStr === "__DUMMY__") return 0.5;
