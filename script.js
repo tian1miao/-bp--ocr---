@@ -1,5 +1,4 @@
-// ================= 核心缓存与状态 =================
-let heroDict = {}, idToName = {}, qqIdToName = {};
+let heroDict = {}, idToName = {};
 let posCache = {}, wrCache = {}, anaCache = {}, periodCache = {}, equipCache = {}, hashLib = {};
 const POSITIONS = ["对抗路", "中路", "发育路", "打野", "辅助"];
 let myTeam = [], enemyTeam = [], myPositions = [], userPosition = "", isCalculating = false;
@@ -10,12 +9,11 @@ function log(msg) {
   el.scrollTop = el.scrollHeight;
 }
 
-// ================= 纯前端同构 dHash =================
 const BP_PARAMS = {
   PICK_Y: [0.171, 0.330, 0.491, 0.652, 0.814],
   PICK_X_L: 0.192, PICK_X_R: 0.194, SIDE: 0.118,
   MASK: [[0.00, 0.00, 0.19, 0.32], [0.26, 0.72, 0.71, 1.00]],
-  MATCH_THRESHOLD: 12 
+  MATCH_THRESHOLD: 16 // 放宽容错率，应对手机 Canvas 粗糙缩放
 };
 
 function calcDHash(ctx, imgW, imgH, isLeft, index) {
@@ -36,7 +34,6 @@ function calcDHash(ctx, imgW, imgH, isLeft, index) {
     }
   });
 
-  // 利用 Canvas 双线性插值缩放至 9x8 并计算亮度比较
   const tempCanvas = document.createElement('canvas'); tempCanvas.width = rect.w; tempCanvas.height = rect.h;
   tempCanvas.getContext('2d').putImageData(oData, 0, 0);
   
@@ -74,29 +71,35 @@ async function recognizeImg(img) {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(img, 0, 0);
 
-  const leftIds = [], rightIds = [];
+  const leftNames = [], rightNames = [];
+  log("--- 开始图像特征诊断 ---");
+  
   for (let i = 0; i < 5; i++) {
     const lHash = calcDHash(ctx, img.width, img.height, true, i);
     const rHash = calcDHash(ctx, img.width, img.height, false, i);
     let lBest = null, lMin = 999, rBest = null, rMin = 999;
 
-    for (const [id, variants] of Object.entries(hashLib)) {
+    for (const [name, variants] of Object.entries(hashLib)) {
       variants.forEach(vh => {
-        const d1 = hamming(lHash, vh); if (d1 < lMin) { lMin = d1; lBest = id; }
-        const d2 = hamming(rHash, vh); if (d2 < rMin) { rMin = d2; rBest = id; }
+        const d1 = hamming(lHash, vh); if (d1 < lMin) { lMin = d1; lBest = name; }
+        const d2 = hamming(rHash, vh); if (d2 < rMin) { rMin = d2; rBest = name; }
       });
     }
-    leftIds.push(lMin <= BP_PARAMS.MATCH_THRESHOLD ? lBest : null);
-    rightIds.push(rMin <= BP_PARAMS.MATCH_THRESHOLD ? rBest : null);
+    
+    // 排错日志：直接打印出每一楼的最优匹配和误差值
+    log(`左${i+1} 最佳匹配: ${lBest} (误差 ${lMin}) -> ${lMin <= BP_PARAMS.MATCH_THRESHOLD ? '✅通过' : '❌丢弃'}`);
+    log(`右${i+1} 最佳匹配: ${rBest} (误差 ${rMin}) -> ${rMin <= BP_PARAMS.MATCH_THRESHOLD ? '✅通过' : '❌丢弃'}`);
+
+    leftNames.push(lMin <= BP_PARAMS.MATCH_THRESHOLD ? lBest : null);
+    rightNames.push(rMin <= BP_PARAMS.MATCH_THRESHOLD ? rBest : null);
   }
-  return { leftIds, rightIds };
+  log("------------------------");
+  return { leftNames, rightNames };
 }
 
-// ================= 数据推演算法 =================
-function assignPos(teamIds) {
+function assignPos(teamNames) {
   const team = [];
-  const prefs = teamIds.filter(id => id).map(id => {
-    const name = qqIdToName[id] || idToName[id];
+  const prefs = teamNames.filter(n => n).map(name => {
     return { name, p: posCache[heroDict[name]] || {} };
   }).sort((a, b) => Math.max(0, ...Object.values(b.p)) - Math.max(0, ...Object.values(a.p)));
 
@@ -155,15 +158,11 @@ function predictWr(myT, enT, period = null) {
   return (1 / (1 + Math.exp(-(1.1811*(avgM-avgE) + 1.2668*(tC/100) + 1.3774*(tS/200))))) * 100;
 }
 
-// ================= 事件调度 =================
 document.addEventListener('DOMContentLoaded', async () => {
   try {
-    const resps = await Promise.all(['hero_list','position_cache','win_rate_cache','hero_analysis_cache','hero_period_cache','equip_cache','hero_hashes'].map(f => fetch(`data/${f}.json`).catch(()=>({json:()=>({})})))
-      .concat(fetch('https://pvp.qq.com/web201605/js/herolist.json').catch(()=>({json:()=>[]})))
-    );
-    [heroDict, posCache, wrCache, anaCache, periodCache, equipCache, hashLib] = await Promise.all(resps.slice(0, 7).map(r => r.json()));
+    const resps = await Promise.all(['hero_list','position_cache','win_rate_cache','hero_analysis_cache','hero_period_cache','equip_cache','hero_hashes'].map(f => fetch(`data/${f}.json`).catch(()=>({json:()=>({})}))) );
+    [heroDict, posCache, wrCache, anaCache, periodCache, equipCache, hashLib] = await Promise.all(resps.map(r => r.json()));
     idToName = Object.fromEntries(Object.entries(heroDict).map(([k,v])=>[v,k]));
-    (await resps[7].json()).forEach(h => qqIdToName[h.ename] = h.cname);
   } catch(e) {}
   document.getElementById('btn-consult').addEventListener('click', () => handleUpload('consult'));
   document.getElementById('btn-predict').addEventListener('click', () => handleUpload('predict'));
@@ -183,8 +182,8 @@ async function handleUpload(mode) {
     const img = new Image(); img.src = URL.createObjectURL(fileInput.files[0]);
     await new Promise(r => img.onload = r);
 
-    const { leftIds, rightIds } = await recognizeImg(img);
-    myTeam = assignPos(leftIds); enemyTeam = assignPos(rightIds);
+    const { leftNames, rightNames } = await recognizeImg(img);
+    myTeam = assignPos(leftNames); enemyTeam = assignPos(rightNames);
     myPositions = myTeam.map(h => h[1]);
 
     log(`✅ 智能推演完毕。\n【我方】: ${myTeam.map(h=>`${h[0]}(${h[1]})`).join(', ') || '空'}\n【敌方】: ${enemyTeam.map(h=>`${h[0]}(${h[1]})`).join(', ') || '空'}\n`);
@@ -215,7 +214,7 @@ async function showRecs() {
     }
     if (res.length) {
       html += `<div class="hero-group">补位: ${pos}</div>`;
-      res.sort((a,b)=>b.score-a.score).slice(0,3).forEach(r => html += `<div class="hero-item">${r.name} [胜率贡献: ${r.score.toFixed(1)}%]</div>`);
+      res.sort((a,b)=>b.score-a.score).slice(0,3).forEach(r => html += `<div class="hero-item">${r.name} [融入胜率: ${r.score.toFixed(1)}%]</div>`);
     }
   }
   rc.innerHTML = html;
