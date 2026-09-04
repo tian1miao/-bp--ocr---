@@ -19,7 +19,7 @@ const BP_PARAMS = {
   PHASE1_PASS: 10
 };
 
-// 常规网格（与 Python TRANSFORMS 完全一致）
+// 常规网格
 const PHASE1_GRID = [];
 for (const s of [0.85, 0.92, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25]) {
   for (const dx of [0.00, -0.03, 0.03]) {
@@ -29,7 +29,7 @@ for (const s of [0.85, 0.92, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25]) {
   }
 }
 
-// 兜底网格（与 Python FALLBACK_TRANSFORMS 完全一致）
+// 兜底网格
 const PHASE2_GRID = [];
 for (const s of [0.75, 0.80]) {
   for (const dx of [0.00, 0.02, 0.04, 0.06, -0.02, -0.04, -0.06]) {
@@ -91,7 +91,7 @@ function dct2D(matrix) {
   return finalMatrix;
 }
 
-// ================= 自实现 pHash（输入为缩放后的 32x32 彩色 ImageData） =================
+// ================= 自实现 pHash =================
 function computePhash(imgData) {
   if (imgData.width !== 32 || imgData.height !== 32) {
     throw new Error("pHash 需要 32x32 的输入图像");
@@ -99,7 +99,6 @@ function computePhash(imgData) {
   const pixels = imgData.data;
   const gray = new Float32Array(32 * 32);
   for (let i = 0; i < 32 * 32; i++) {
-    // 在缩放后的彩色数据上计算灰度（与 PIL convert("L") 公式一致）
     const r = pixels[i * 4];
     const g = pixels[i * 4 + 1];
     const b = pixels[i * 4 + 2];
@@ -140,9 +139,8 @@ function computePhash(imgData) {
   return hash;
 }
 
-// ================= 裁剪 + 遮罩 + 缩放（彩色） + pHash =================
+// ================= 裁剪 + 遮罩 + 缩放 + pHash =================
 function cropAndPhash(ctx, imgW, imgH, isLeft, index, scale, dx, dy) {
-  // 1. 基础裁剪框
   let side = Math.max(24, Math.round(imgH * BP_PARAMS.SIDE));
   let centerY = Math.round(imgH * BP_PARAMS.PICK_Y[index]);
   let ratio = isLeft ? BP_PARAMS.PICK_X_L : BP_PARAMS.PICK_X_R;
@@ -158,13 +156,11 @@ function cropAndPhash(ctx, imgW, imgH, isLeft, index, scale, dx, dy) {
   let centerX = left + w / 2;
   let centerY2 = top + h / 2;
 
-  // 2. 变换
   let nw = w * scale;
   let nh = h * scale;
   let n_left = centerX - nw / 2 + dx * w;
   let n_top = centerY2 - nh / 2 + dy * h;
 
-  // 3. 整数截断
   let final_l = Math.trunc(n_left);
   let final_t = Math.trunc(n_top);
   let final_r = Math.trunc(n_left + nw);
@@ -174,14 +170,12 @@ function cropAndPhash(ctx, imgW, imgH, isLeft, index, scale, dx, dy) {
 
   if (final_w <= 0 || final_h <= 0) return null;
 
-  // 4. 从原图裁剪
   const cropCanvas = document.createElement('canvas');
   cropCanvas.width = final_w;
   cropCanvas.height = final_h;
   const cropCtx = cropCanvas.getContext('2d', { willReadFrequently: true });
   cropCtx.drawImage(ctx.canvas, final_l, final_t, final_w, final_h, 0, 0, final_w, final_h);
 
-  // 5. 应用遮罩
   const cropData = cropCtx.getImageData(0, 0, final_w, final_h);
   BP_PARAMS.MASK.forEach(([ml, mt, mr, mb]) => {
     const sl = Math.floor(final_w * ml);
@@ -197,7 +191,6 @@ function cropAndPhash(ctx, imgW, imgH, isLeft, index, scale, dx, dy) {
   });
   cropCtx.putImageData(cropData, 0, 0);
 
-  // 6. 直接缩放到 32x32（彩色，高质量插值）
   const resizeCanvas = document.createElement('canvas');
   resizeCanvas.width = 32;
   resizeCanvas.height = 32;
@@ -207,14 +200,17 @@ function cropAndPhash(ctx, imgW, imgH, isLeft, index, scale, dx, dy) {
   resizeCtx.drawImage(cropCanvas, 0, 0, final_w, final_h, 0, 0, 32, 32);
   const resizedData = resizeCtx.getImageData(0, 0, 32, 32);
 
-  // 7. 计算 pHash（内部会在缩放后的彩色数据上计算灰度）
   return computePhash(resizedData);
 }
 
-// ================= 网格搜索 =================
-function runGridSearch(ctx, imgW, imgH, isLeft, index, grid) {
+// ================= 网格搜索（带调试信息） =================
+function runGridSearch(ctx, imgW, imgH, isLeft, index, grid, debugLabel) {
   let bestId = null;
   let bestDist = 999;
+  let bestHash = null;
+  let bestLibHash = null;
+  let bestParams = null;
+
   for (const { scale, dx, dy } of grid) {
     const hash = cropAndPhash(ctx, imgW, imgH, isLeft, index, scale, dx, dy);
     if (!hash) continue;
@@ -224,12 +220,22 @@ function runGridSearch(ctx, imgW, imgH, isLeft, index, grid) {
         if (d < bestDist) {
           bestDist = d;
           bestId = heroId;
-          if (bestDist <= 2) return { id: bestId, dist: bestDist };
+          bestHash = hash;
+          bestLibHash = vh;
+          bestParams = { scale, dx, dy };
+          if (bestDist <= 2) {
+            // 提前退出时也记录
+            log(`  [${debugLabel}] 提前命中: 英雄ID=${bestId}, 距离=${bestDist}, 前端hash=${bestHash}, 库hash=${bestLibHash}, 参数=${JSON.stringify(bestParams)}`);
+            return { id: bestId, dist: bestDist, hash: bestHash, libHash: bestLibHash, params: bestParams };
+          }
         }
       }
     }
   }
-  return { id: bestId, dist: bestDist };
+  if (bestDist < 999) {
+    log(`  [${debugLabel}] 最佳匹配: 英雄ID=${bestId}, 距离=${bestDist}, 前端hash=${bestHash}, 库hash=${bestLibHash}, 参数=${JSON.stringify(bestParams)}`);
+  }
+  return { id: bestId, dist: bestDist, hash: bestHash, libHash: bestLibHash, params: bestParams };
 }
 
 // ================= 识别主流程 =================
@@ -240,31 +246,33 @@ function recognizeImg(img) {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(img, 0, 0);
 
+  log(`图片尺寸: ${img.width} x ${img.height}`);
+
   const leftNames = [], rightNames = [];
   log("--- 开始图像识别 (pHash) ---");
 
   for (let i = 0; i < 5; i++) {
     // 左槽位
-    let lRes = runGridSearch(ctx, img.width, img.height, true, i, PHASE1_GRID);
+    let lRes = runGridSearch(ctx, img.width, img.height, true, i, PHASE1_GRID, `左${i+1}常规`);
     if (lRes.dist > BP_PARAMS.PHASE1_PASS) {
-      const p2Res = runGridSearch(ctx, img.width, img.height, true, i, PHASE2_GRID);
+      const p2Res = runGridSearch(ctx, img.width, img.height, true, i, PHASE2_GRID, `左${i+1}兜底`);
       if (p2Res.dist < lRes.dist) {
         log(`  [左${i+1} 兜底] 原${lRes.id}(${lRes.dist}) -> 新${p2Res.id}(${p2Res.dist})`);
         lRes = p2Res;
       }
     }
     // 右槽位
-    let rRes = runGridSearch(ctx, img.width, img.height, false, i, PHASE1_GRID);
+    let rRes = runGridSearch(ctx, img.width, img.height, false, i, PHASE1_GRID, `右${i+1}常规`);
     if (rRes.dist > BP_PARAMS.PHASE1_PASS) {
-      const p2Res = runGridSearch(ctx, img.width, img.height, false, i, PHASE2_GRID);
+      const p2Res = runGridSearch(ctx, img.width, img.height, false, i, PHASE2_GRID, `右${i+1}兜底`);
       if (p2Res.dist < rRes.dist) {
         log(`  [右${i+1} 兜底] 原${rRes.id}(${rRes.dist}) -> 新${p2Res.id}(${p2Res.dist})`);
         rRes = p2Res;
       }
     }
 
-    log(`左${i+1}: ${lRes.id} (${lRes.dist}) ${lRes.dist <= BP_PARAMS.MATCH_THRESHOLD ? '✅' : '❌'}`);
-    log(`右${i+1}: ${rRes.id} (${rRes.dist}) ${rRes.dist <= BP_PARAMS.MATCH_THRESHOLD ? '✅' : '❌'}`);
+    log(`左${i+1} 最终: ${lRes.id} (距离 ${lRes.dist}) ${lRes.dist <= BP_PARAMS.MATCH_THRESHOLD ? '✅' : '❌'}`);
+    log(`右${i+1} 最终: ${rRes.id} (距离 ${rRes.dist}) ${rRes.dist <= BP_PARAMS.MATCH_THRESHOLD ? '✅' : '❌'}`);
 
     leftNames.push(lRes.dist <= BP_PARAMS.MATCH_THRESHOLD ? lRes.id : null);
     rightNames.push(rRes.dist <= BP_PARAMS.MATCH_THRESHOLD ? rRes.id : null);
@@ -274,7 +282,15 @@ function recognizeImg(img) {
   return { leftNames, rightNames };
 }
 
-// ================= 数据推演与胜率核心 =================
+// ================= 数据推演与胜率核心（保持不变，以下略） =================
+// ... 将原来 script.js 中剩余的函数原样保留 ...
+// （为避免篇幅过长，这里不再重复，但你需要把之前完整 script.js 中的其余函数复制过来）
+
+// 注意：上面的代码只是识别部分，后面的 assignPos、getWr 等函数也需要保留。
+// 由于篇幅限制，此处未完整展示全部函数，请从之前的完整 script.js 中复制剩余部分。
+// 但为了确保能直接使用，下面补充完整剩余代码（与之前提供的完全一致）：
+
+// 开始复制剩余部分
 function assignPos(teamNames) {
   const team = [];
   const prefs = teamNames.filter(n => n).map(name => {
