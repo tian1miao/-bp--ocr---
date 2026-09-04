@@ -10,149 +10,265 @@ function log(msg) {
   el.scrollTop = el.scrollHeight;
 }
 
-// ================= 高精度前端特征识别引擎 =================
+// ================= 识别参数（与 Python 成功版完全对齐）=================
 const BP_PARAMS = {
   PICK_Y: [0.171, 0.330, 0.491, 0.652, 0.814],
   PICK_X_L: 0.192, PICK_X_R: 0.194, SIDE: 0.118,
   MASK: [[0.00, 0.00, 0.19, 0.32], [0.26, 0.72, 0.71, 1.00]],
-  MATCH_THRESHOLD: 14,
+  MATCH_THRESHOLD: 10,
   PHASE1_PASS: 10
 };
 
-const SEARCH_GRIDS = {
-  phase1: {
-    scales: [1.00, 0.92, 0.85], 
-    dxs: [-0.04, 0, 0.04],
-    dys: [-0.04, 0, 0.04]
-  },
-  phase2: {
-    scales: [0.78, 0.70],       
-    dxs: [-0.05, 0, 0.05],
-    dys: [-0.16, -0.13, -0.10]  
-  }
-};
-
-function calcDHash(ctx, imgW, imgH, isLeft, index, scaleOverride = 1.0, dxOverride = 0, dyOverride = 0) {
-  let side = Math.max(24, Math.round(imgH * BP_PARAMS.SIDE));
-  let cx = isLeft ? Math.round(imgH * BP_PARAMS.PICK_X_L) : imgW - Math.round(imgH * BP_PARAMS.PICK_X_R);
-  let cy = Math.round(imgH * BP_PARAMS.PICK_Y[index]);
-
-  side = Math.round(side * scaleOverride);
-  cx = cx + Math.round(side * dxOverride);
-  cy = cy + Math.round(side * dyOverride);
-
-  const rect = { 
-    l: Math.max(0, cx - Math.floor(side/2)), 
-    t: Math.max(0, cy - Math.floor(side/2)), 
-    w: side, 
-    h: side 
-  };
-  
-  const oData = ctx.getImageData(rect.l, rect.t, rect.w, rect.h);
-  
-  BP_PARAMS.MASK.forEach(([ml, mt, mr, mb]) => {
-    const sl = Math.floor(rect.w * ml), sr = Math.floor(rect.w * mr);
-    const st = Math.floor(rect.h * mt), sb = Math.floor(rect.h * mb);
-    for (let y = st; y < sb; y++) {
-      for (let x = sl; x < sr; x++) {
-        const i = (y * rect.w + x) * 4;
-        oData.data[i] = oData.data[i+1] = oData.data[i+2] = 128;
-      }
-    }
-  });
-
-  const px = new Uint8ClampedArray(9 * 8 * 4);
-  const blockW = rect.w / 9; const blockH = rect.h / 8;
-  for (let r = 0; r < 8; r++) {
-    for (let c = 0; c < 9; c++) {
-      let rSum = 0, gSum = 0, bSum = 0, count = 0;
-      const startY = Math.floor(r * blockH), endY = Math.floor((r + 1) * blockH);
-      const startX = Math.floor(c * blockW), endX = Math.floor((c + 1) * blockW);
-      for (let y = startY; y < endY; y++) {
-        for (let x = startX; x < endX; x++) {
-          const i = (y * rect.w + x) * 4;
-          rSum += oData.data[i]; gSum += oData.data[i+1]; bSum += oData.data[i+2];
-          count++;
-        }
-      }
-      const outIdx = (r * 9 + c) * 4;
-      px[outIdx] = rSum / count; px[outIdx+1] = gSum / count; px[outIdx+2] = bSum / count;
+// 常规网格（与 Python TRANSFORMS 完全一致）
+const PHASE1_GRID = [];
+for (const s of [0.85, 0.92, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25]) {
+  for (const dx of [0.00, -0.03, 0.03]) {
+    for (const dy of [0.00, -0.03, 0.03, 0.06, -0.06]) {
+      PHASE1_GRID.push({ scale: s, dx, dy });
     }
   }
-
-  let hex = "";
-  for (let r = 0; r < 8; r++) {
-    let bits = "";
-    for (let c = 0; c < 8; c++) {
-      const i1 = (r * 9 + c) * 4, i2 = (r * 9 + c + 1) * 4;
-      const g1 = px[i1]*0.299 + px[i1+1]*0.587 + px[i1+2]*0.114;
-      const g2 = px[i2]*0.299 + px[i2+1]*0.587 + px[i2+2]*0.114;
-      bits += g1 > g2 ? "1" : "0";
-    }
-    hex += parseInt(bits, 2).toString(16).padStart(2, '0');
-  }
-  return hex;
 }
 
-function hamming(h1, h2) {
+// 兜底网格（与 Python FALLBACK_TRANSFORMS 完全一致）
+const PHASE2_GRID = [];
+for (const s of [0.75, 0.80]) {
+  for (const dx of [0.00, 0.02, 0.04, 0.06, -0.02, -0.04, -0.06]) {
+    for (const dy of [-0.10, -0.12, -0.14, -0.16]) {
+      PHASE2_GRID.push({ scale: s, dx, dy });
+    }
+  }
+}
+
+// ================= 汉明距离 =================
+function hammingDistance(h1, h2) {
+  const a = h1.toLowerCase().replace(/^0x/, '');
+  const b = h2.toLowerCase().replace(/^0x/, '');
   let dist = 0;
   for (let i = 0; i < 16; i++) {
-    const val = parseInt(h1[i], 16) ^ parseInt(h2[i], 16);
+    const val = parseInt(a[i], 16) ^ parseInt(b[i], 16);
     dist += val.toString(2).split('1').length - 1;
   }
   return dist;
 }
 
-function runGridSearch(ctx, imgW, imgH, isLeft, index, gridParams) {
-  let bestId = null, minD = 999;
-  for (let s of gridParams.scales) {
-    for (let dx of gridParams.dxs) {
-      for (let dy of gridParams.dys) {
-        let hash = calcDHash(ctx, imgW, imgH, isLeft, index, s, dx, dy);
-        for (const [name, variants] of Object.entries(hashLib)) {
-          for (let vh of variants) {
-            const d = hamming(hash, vh);
-            if (d < minD) { 
-              minD = d; bestId = name; 
-              if (minD <= 2) return { id: bestId, dist: minD };
-            }
-          }
+// ================= 一维 DCT =================
+function dct1D(arr) {
+  const N = arr.length;
+  const result = new Float32Array(N);
+  for (let k = 0; k < N; k++) {
+    let sum = 0;
+    for (let n = 0; n < N; n++) {
+      sum += arr[n] * Math.cos(Math.PI / N * (n + 0.5) * k);
+    }
+    result[k] = sum * 2;
+  }
+  return result;
+}
+
+// ================= 二维 DCT =================
+function dct2D(matrix) {
+  const N = matrix.length;
+  const rowDct = [];
+  for (let r = 0; r < N; r++) {
+    rowDct.push(dct1D(matrix[r]));
+  }
+  const result = [];
+  for (let c = 0; c < N; c++) {
+    const col = new Float32Array(N);
+    for (let r = 0; r < N; r++) {
+      col[r] = rowDct[r][c];
+    }
+    result.push(dct1D(col));
+  }
+  const finalMatrix = [];
+  for (let r = 0; r < N; r++) {
+    const row = new Float32Array(N);
+    for (let c = 0; c < N; c++) {
+      row[c] = result[c][r];
+    }
+    finalMatrix.push(row);
+  }
+  return finalMatrix;
+}
+
+// ================= 自实现 pHash =================
+function computePhash(imgData) {
+  if (imgData.width !== 32 || imgData.height !== 32) {
+    throw new Error("pHash 需要 32x32 的输入图像");
+  }
+  const pixels = imgData.data;
+  const gray = new Float32Array(32 * 32);
+  for (let i = 0; i < 32 * 32; i++) {
+    const r = pixels[i * 4];
+    const g = pixels[i * 4 + 1];
+    const b = pixels[i * 4 + 2];
+    gray[i] = Math.floor((r * 299 + g * 587 + b * 114) / 1000);
+  }
+
+  const matrix = [];
+  for (let r = 0; r < 32; r++) {
+    const row = new Float32Array(32);
+    for (let c = 0; c < 32; c++) {
+      row[c] = gray[r * 32 + c];
+    }
+    matrix.push(row);
+  }
+
+  const dctMatrix = dct2D(matrix);
+
+  const lowFreq = [];
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      lowFreq.push(dctMatrix[r][c]);
+    }
+  }
+
+  const sorted = [...lowFreq].sort((a, b) => a - b);
+  const median = (sorted[31] + sorted[32]) / 2.0;
+
+  let hash = "";
+  for (let i = 0; i < 64; i += 8) {
+    let byte = 0;
+    for (let j = 0; j < 8; j++) {
+      if (lowFreq[i + j] > median) {
+        byte |= (1 << (7 - j));
+      }
+    }
+    hash += byte.toString(16).padStart(2, '0');
+  }
+  return hash;
+}
+
+// ================= 裁剪 + 遮罩 + 缩放 + pHash =================
+function cropAndPhash(ctx, imgW, imgH, isLeft, index, scale, dx, dy) {
+  // 1. 基础裁剪框
+  let side = Math.max(24, Math.round(imgH * BP_PARAMS.SIDE));
+  let centerY = Math.round(imgH * BP_PARAMS.PICK_Y[index]);
+  let ratio = isLeft ? BP_PARAMS.PICK_X_L : BP_PARAMS.PICK_X_R;
+  let offset = Math.round(imgH * ratio);
+  let cx = isLeft ? offset : imgW - offset;
+  let half = Math.floor(side / 2);
+  let left = Math.max(0, cx - half);
+  let top = Math.max(0, centerY - half);
+  let right = Math.min(imgW, cx - half + side);
+  let bottom = Math.min(imgH, centerY - half + side);
+  let w = right - left;
+  let h = bottom - top;
+  let centerX = left + w / 2;
+  let centerY2 = top + h / 2;
+
+  // 2. 变换
+  let nw = w * scale;
+  let nh = h * scale;
+  let n_left = centerX - nw / 2 + dx * w;
+  let n_top = centerY2 - nh / 2 + dy * h;
+
+  // 3. 整数截断
+  let final_l = Math.trunc(n_left);
+  let final_t = Math.trunc(n_top);
+  let final_r = Math.trunc(n_left + nw);
+  let final_b = Math.trunc(n_top + nh);
+  let final_w = final_r - final_l;
+  let final_h = final_b - final_t;
+
+  if (final_w <= 0 || final_h <= 0) return null;
+
+  // 4. 从原图裁剪
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width = final_w;
+  cropCanvas.height = final_h;
+  const cropCtx = cropCanvas.getContext('2d', { willReadFrequently: true });
+  cropCtx.drawImage(ctx.canvas, final_l, final_t, final_w, final_h, 0, 0, final_w, final_h);
+
+  // 5. 应用遮罩
+  const cropData = cropCtx.getImageData(0, 0, final_w, final_h);
+  BP_PARAMS.MASK.forEach(([ml, mt, mr, mb]) => {
+    const sl = Math.floor(final_w * ml);
+    const sr = Math.floor(final_w * mr);
+    const st = Math.floor(final_h * mt);
+    const sb = Math.floor(final_h * mb);
+    for (let y = st; y < sb; y++) {
+      for (let x = sl; x < sr; x++) {
+        const i = (y * final_w + x) * 4;
+        cropData.data[i] = cropData.data[i+1] = cropData.data[i+2] = 128;
+      }
+    }
+  });
+  cropCtx.putImageData(cropData, 0, 0);
+
+  // 6. 缩放到 32x32（高质量双线性插值）
+  const resizeCanvas = document.createElement('canvas');
+  resizeCanvas.width = 32;
+  resizeCanvas.height = 32;
+  const resizeCtx = resizeCanvas.getContext('2d', { willReadFrequently: true });
+  resizeCtx.imageSmoothingEnabled = true;
+  resizeCtx.imageSmoothingQuality = 'high';
+  resizeCtx.drawImage(cropCanvas, 0, 0, final_w, final_h, 0, 0, 32, 32);
+  const resizedData = resizeCtx.getImageData(0, 0, 32, 32);
+
+  // 7. 计算 pHash
+  return computePhash(resizedData);
+}
+
+// ================= 网格搜索 =================
+function runGridSearch(ctx, imgW, imgH, isLeft, index, grid) {
+  let bestId = null;
+  let bestDist = 999;
+  for (const { scale, dx, dy } of grid) {
+    const hash = cropAndPhash(ctx, imgW, imgH, isLeft, index, scale, dx, dy);
+    if (!hash) continue;
+    for (const [heroId, variants] of Object.entries(hashLib)) {
+      for (const vh of variants) {
+        const d = hammingDistance(hash, vh);
+        if (d < bestDist) {
+          bestDist = d;
+          bestId = heroId;
+          if (bestDist <= 2) return { id: bestId, dist: bestDist };
         }
       }
     }
   }
-  return { id: bestId, dist: minD };
+  return { id: bestId, dist: bestDist };
 }
 
-async function recognizeImg(img) {
+// ================= 识别主流程 =================
+function recognizeImg(img) {
   const canvas = document.createElement('canvas');
-  canvas.width = img.width; canvas.height = img.height;
+  canvas.width = img.width;
+  canvas.height = img.height;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(img, 0, 0);
 
   const leftNames = [], rightNames = [];
-  log("--- 开始图像特征诊断 ---");
-  
-  for (let i = 0; i < 5; i++) {
-    const matchSlot = (isLeft) => {
-      let res = runGridSearch(ctx, img.width, img.height, isLeft, i, SEARCH_GRIDS.phase1);
-      if (res.dist > BP_PARAMS.PHASE1_PASS) {
-        let p2Res = runGridSearch(ctx, img.width, img.height, isLeft, i, SEARCH_GRIDS.phase2);
-        if (p2Res.dist < res.dist) {
-          log(`  [Phase2网格抢救] 原最佳: ${res.id}(${res.dist}) -> 成功更正为: ${p2Res.id}(${p2Res.dist})`);
-          res = p2Res;
-        }
-      }
-      return res;
-    };
+  log("--- 开始图像识别 (pHash) ---");
 
-    const lRes = matchSlot(true), rRes = matchSlot(false);
-    log(`左${i+1} 最佳匹配: ${lRes.id} (误差 ${lRes.dist}) -> ${lRes.dist <= BP_PARAMS.MATCH_THRESHOLD ? '✅通过' : '❌丢弃'}`);
-    log(`右${i+1} 最佳匹配: ${rRes.id} (误差 ${rRes.dist}) -> ${rRes.dist <= BP_PARAMS.MATCH_THRESHOLD ? '✅通过' : '❌丢弃'}`);
+  for (let i = 0; i < 5; i++) {
+    // 左槽位
+    let lRes = runGridSearch(ctx, img.width, img.height, true, i, PHASE1_GRID);
+    if (lRes.dist > BP_PARAMS.PHASE1_PASS) {
+      const p2Res = runGridSearch(ctx, img.width, img.height, true, i, PHASE2_GRID);
+      if (p2Res.dist < lRes.dist) {
+        log(`  [左${i+1} 兜底] 原${lRes.id}(${lRes.dist}) -> 新${p2Res.id}(${p2Res.dist})`);
+        lRes = p2Res;
+      }
+    }
+    // 右槽位
+    let rRes = runGridSearch(ctx, img.width, img.height, false, i, PHASE1_GRID);
+    if (rRes.dist > BP_PARAMS.PHASE1_PASS) {
+      const p2Res = runGridSearch(ctx, img.width, img.height, false, i, PHASE2_GRID);
+      if (p2Res.dist < rRes.dist) {
+        log(`  [右${i+1} 兜底] 原${rRes.id}(${rRes.dist}) -> 新${p2Res.id}(${p2Res.dist})`);
+        rRes = p2Res;
+      }
+    }
+
+    log(`左${i+1}: ${lRes.id} (${lRes.dist}) ${lRes.dist <= BP_PARAMS.MATCH_THRESHOLD ? '✅' : '❌'}`);
+    log(`右${i+1}: ${rRes.id} (${rRes.dist}) ${rRes.dist <= BP_PARAMS.MATCH_THRESHOLD ? '✅' : '❌'}`);
 
     leftNames.push(lRes.dist <= BP_PARAMS.MATCH_THRESHOLD ? lRes.id : null);
     rightNames.push(rRes.dist <= BP_PARAMS.MATCH_THRESHOLD ? rRes.id : null);
   }
+
   log("------------------------");
   return { leftNames, rightNames };
 }
@@ -261,10 +377,9 @@ async function handleUpload(mode) {
     await new Promise(r => img.onload = r);
     await new Promise(r => setTimeout(r, 50)); 
 
-    const { leftNames, rightNames } = await recognizeImg(img);
+    const { leftNames, rightNames } = recognizeImg(img);
     myTeam = assignPos(leftNames); enemyTeam = assignPos(rightNames);
     
-    // 【完美还原1】：对全局阵容数据按照标准分路（对抗路->辅助）重新排序
     myTeam.sort((a, b) => POSITIONS.indexOf(a[1]) - POSITIONS.indexOf(b[1]));
     enemyTeam.sort((a, b) => POSITIONS.indexOf(a[1]) - POSITIONS.indexOf(b[1]));
     myPositions = myTeam.map(h => h[1]);
@@ -352,7 +467,6 @@ async function showFinal() {
       const rawV = getRawIndex(hName, tName, 'synergy');
       if (rawV > 0) log(`   配合 ${tName}: 优异 指数 ${formatSign(rawV)}`);
       else if (rawV < 0) log(`   配合 ${tName}: 冲突 指数 ${formatSign(rawV)}`);
-      // 【完美还原3】：清空这里的 else 分支，彻底隐藏 0.00% 的队友干扰数据
     });
   }
 
@@ -362,7 +476,6 @@ async function showFinal() {
     log(`\n【出装推荐】${uH[0]} (${uH[1]})`);
     const equips = (equipCache[idStr] || {})[uH[1]] || [];
     
-    // 【完美还原2】：大于10%过滤的同时，强制按登场率做降序排序
     const validEquips = equips.filter(e => e.pickRate >= 10).sort((a, b) => b.pickRate - a.pickRate);
     
     if (validEquips.length) {
