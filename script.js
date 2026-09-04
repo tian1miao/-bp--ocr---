@@ -13,7 +13,7 @@ const BP_PARAMS = {
   PICK_Y: [0.171, 0.330, 0.491, 0.652, 0.814],
   PICK_X_L: 0.192, PICK_X_R: 0.194, SIDE: 0.118,
   MASK: [[0.00, 0.00, 0.19, 0.32], [0.26, 0.72, 0.71, 1.00]],
-  MATCH_THRESHOLD: 16 // 放宽容错率，应对手机 Canvas 粗糙缩放
+  MATCH_THRESHOLD: 22 // 放宽容错率，应对手机 Canvas 粗糙缩放
 };
 
 function calcDHash(ctx, imgW, imgH, isLeft, index) {
