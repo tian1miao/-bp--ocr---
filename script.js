@@ -1,4 +1,5 @@
-let heroDict = {}, idToName = {};
+// ================= 核心缓存与状态 =================
+let heroDict = {}, idToName = {}, qqIdToName = {};
 let posCache = {}, wrCache = {}, anaCache = {}, periodCache = {}, equipCache = {}, hashLib = {};
 const POSITIONS = ["对抗路", "中路", "发育路", "打野", "辅助"];
 let myTeam = [], enemyTeam = [], myPositions = [], userPosition = "", isCalculating = false;
@@ -9,11 +10,12 @@ function log(msg) {
   el.scrollTop = el.scrollHeight;
 }
 
+// ================= 纯前端同构 dHash (带高精度像素均值缩放) =================
 const BP_PARAMS = {
   PICK_Y: [0.171, 0.330, 0.491, 0.652, 0.814],
   PICK_X_L: 0.192, PICK_X_R: 0.194, SIDE: 0.118,
   MASK: [[0.00, 0.00, 0.19, 0.32], [0.26, 0.72, 0.71, 1.00]],
-  MATCH_THRESHOLD: 22 // 放宽容错率，应对手机 Canvas 粗糙缩放
+  MATCH_THRESHOLD: 14 // 采用高精度缩放后，可将阈值收紧至14，杜绝张冠李戴
 };
 
 function calcDHash(ctx, imgW, imgH, isLeft, index) {
@@ -23,6 +25,7 @@ function calcDHash(ctx, imgW, imgH, isLeft, index) {
   const rect = { l: Math.max(0, cx - Math.floor(side/2)), t: Math.max(0, cy - Math.floor(side/2)), w: side, h: side };
 
   const oData = ctx.getImageData(rect.l, rect.t, rect.w, rect.h);
+  // 应用遮罩
   BP_PARAMS.MASK.forEach(([ml, mt, mr, mb]) => {
     const sl = Math.floor(rect.w * ml), sr = Math.floor(rect.w * mr);
     const st = Math.floor(rect.h * mt), sb = Math.floor(rect.h * mb);
@@ -34,14 +37,34 @@ function calcDHash(ctx, imgW, imgH, isLeft, index) {
     }
   });
 
-  const tempCanvas = document.createElement('canvas'); tempCanvas.width = rect.w; tempCanvas.height = rect.h;
-  tempCanvas.getContext('2d').putImageData(oData, 0, 0);
-  
-  const resizeCanvas = document.createElement('canvas'); resizeCanvas.width = 9; resizeCanvas.height = 8;
-  const rCtx = resizeCanvas.getContext('2d', {willReadFrequently: true});
-  rCtx.drawImage(tempCanvas, 0, 0, 9, 8);
-  const px = rCtx.getImageData(0, 0, 9, 8).data;
+  // 手工实现高精度 Block Average 缩放 (9x8)，对齐 Python 的 BILINEAR
+  const px = new Uint8ClampedArray(9 * 8 * 4);
+  const blockW = rect.w / 9;
+  const blockH = rect.h / 8;
 
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 9; c++) {
+      let rSum = 0, gSum = 0, bSum = 0, count = 0;
+      const startY = Math.floor(r * blockH), endY = Math.floor((r + 1) * blockH);
+      const startX = Math.floor(c * blockW), endX = Math.floor((c + 1) * blockW);
+
+      for (let y = startY; y < endY; y++) {
+        for (let x = startX; x < endX; x++) {
+          const i = (y * rect.w + x) * 4;
+          rSum += oData.data[i];
+          gSum += oData.data[i+1];
+          bSum += oData.data[i+2];
+          count++;
+        }
+      }
+      const outIdx = (r * 9 + c) * 4;
+      px[outIdx] = rSum / count;
+      px[outIdx+1] = gSum / count;
+      px[outIdx+2] = bSum / count;
+    }
+  }
+
+  // 计算亮度梯度 (dHash)
   let hex = "";
   for (let r = 0; r < 8; r++) {
     let bits = "";
@@ -86,7 +109,6 @@ async function recognizeImg(img) {
       });
     }
     
-    // 排错日志：直接打印出每一楼的最优匹配和误差值
     log(`左${i+1} 最佳匹配: ${lBest} (误差 ${lMin}) -> ${lMin <= BP_PARAMS.MATCH_THRESHOLD ? '✅通过' : '❌丢弃'}`);
     log(`右${i+1} 最佳匹配: ${rBest} (误差 ${rMin}) -> ${rMin <= BP_PARAMS.MATCH_THRESHOLD ? '✅通过' : '❌丢弃'}`);
 
@@ -97,6 +119,7 @@ async function recognizeImg(img) {
   return { leftNames, rightNames };
 }
 
+// ================= 数据推演算法 =================
 function assignPos(teamNames) {
   const team = [];
   const prefs = teamNames.filter(n => n).map(name => {
@@ -158,6 +181,7 @@ function predictWr(myT, enT, period = null) {
   return (1 / (1 + Math.exp(-(1.1811*(avgM-avgE) + 1.2668*(tC/100) + 1.3774*(tS/200))))) * 100;
 }
 
+// ================= 事件调度 =================
 document.addEventListener('DOMContentLoaded', async () => {
   try {
     const resps = await Promise.all(['hero_list','position_cache','win_rate_cache','hero_analysis_cache','hero_period_cache','equip_cache','hero_hashes'].map(f => fetch(`data/${f}.json`).catch(()=>({json:()=>({})}))) );
@@ -222,7 +246,17 @@ async function showRecs() {
 
 async function showFinal() {
   log("【数据维度】整体胜率(天元之弈日更) | 强势期(近一月推演)\n");
-  log(`【预测胜率】我方 ${predictWr(myTeam, enemyTeam).toFixed(1)}% | 敌方 ${(100-predictWr(myTeam, enemyTeam)).toFixed(1)}%`);
+  const finalWr = predictWr(myTeam, enemyTeam);
+  log(`【预测胜率】我方 ${finalWr.toFixed(1)}% | 敌方 ${(100-finalWr).toFixed(1)}%`);
+  
+  // 完全还原的阵容评估逻辑
+  let evalText = "中规中矩";
+  if (finalWr >= 55) evalText = "绝佳妙手 (碾压优势)";
+  else if (finalWr <= 45) evalText = "惊天臭手 (极致劣势)";
+  else if (finalWr > 50) evalText = "略占上风";
+  else if (finalWr < 50) evalText = "略处下风";
+  log(`【阵容评估】${evalText}`);
+
   log(`【时段走势】前(${predictWr(myTeam, enemyTeam, 'e').toFixed(1)}%) -> 中(${predictWr(myTeam, enemyTeam, 'm').toFixed(1)}%) -> 后(${predictWr(myTeam, enemyTeam, 'l').toFixed(1)}%)`);
 
   const uH = myTeam.find(h => h[1] === userPosition);
@@ -232,6 +266,8 @@ async function showFinal() {
     const periods = periodCache[idStr] || [];
     log("【强势期】" + (periods.length ? periods.map(p => `${p.durationRange}(${p.winRate.toFixed(1)}%)`).join(' / ') : "暂无"));
     const equips = (equipCache[idStr] || {})[uH[1]] || [];
-    log("【优选装备】\n" + (equips.length ? equips.slice(0,3).map(e => ` - ${e.equipmentName} (登场率${e.pickRate.toFixed(1)}%, 胜率${e.winRate.toFixed(1)}%)`).join('\n') : "暂无"));
+    
+    // 完整呈现出场率>10%的所有装备
+    log("【优选装备】\n" + (equips.length ? equips.map(e => ` - ${e.equipmentName} (登场率${e.pickRate.toFixed(1)}%, 胜率${e.winRate.toFixed(1)}%)`).join('\n') : "暂无"));
   } else log(`\n⚠️ 警告：检测系统未把我方任何人推演至你的预设分路(${userPosition})。`);
 }
