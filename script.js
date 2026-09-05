@@ -19,25 +19,32 @@ const BP_PARAMS = {
   PHASE1_PASS: 10
 };
 
-// 常规网格
+// ================= 智能自适应搜索网格 =================
 const PHASE1_GRID = [];
-for (const s of [0.85, 0.92, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25]) {
-  for (const dx of [0.00, -0.03, 0.03]) {
-    for (const dy of [0.00, -0.03, 0.03, 0.06, -0.06]) {
-      PHASE1_GRID.push({ scale: s, dx, dy });
-    }
-  }
-}
-
-// 兜底网格
 const PHASE2_GRID = [];
-for (const s of [0.75, 0.80]) {
-  for (const dx of [0.00, 0.02, 0.04, 0.06, -0.02, -0.04, -0.06]) {
-    for (const dy of [-0.10, -0.12, -0.14, -0.16]) {
-      PHASE2_GRID.push({ scale: s, dx, dy });
+
+// 扩大的搜索范围：应对各种刘海屏和不同屏幕比例（最高支持 ±35% 头像宽度的偏差）
+const scales = [1.00, 0.95, 1.05, 0.90, 1.10, 0.85, 1.15, 1.20, 0.80];
+const dx_list = [0, 0.03, -0.03, 0.08, -0.08, 0.15, -0.15, 0.25, -0.25, 0.35, -0.35];
+const dy_list = [0, 0.03, -0.03, 0.08, -0.08, 0.15, -0.15, -0.20];
+
+const all_transforms = [];
+for (const s of scales) {
+  for (const dx of dx_list) {
+    for (const dy of dy_list) {
+      // 计算惩罚权重：距离中心越远、缩放越极端的组合，延后搜索
+      const weight = Math.abs(1 - s) * 10 + Math.abs(dx) + Math.abs(dy);
+      all_transforms.push({ scale: s, dx, dy, weight });
     }
   }
 }
+// 按权重升序（水波纹式搜索：优先匹配标准坐标，保证性能）
+all_transforms.sort((a, b) => a.weight - b.weight);
+
+// 前 20% 分配给一阶段快速搜索，剩余 80% 作为二阶段深度兜底
+const splitIndex = Math.floor(all_transforms.length * 0.2);
+PHASE1_GRID.push(...all_transforms.slice(0, splitIndex));
+PHASE2_GRID.push(...all_transforms.slice(splitIndex));
 
 // ================= 汉明距离 =================
 function hammingDistance(h1, h2) {
@@ -216,6 +223,7 @@ function runGridSearch(ctx, imgW, imgH, isLeft, index, grid) {
         if (d < bestDist) {
           bestDist = d;
           bestId = heroId;
+          // 由于网格按权重排序，一旦在 ±2 距离内匹配成功，说明必然找到了正确英雄，直接返回极速放行
           if (bestDist <= 2) return { id: bestId, dist: bestDist, name: idToName[bestId] || bestId };
         }
       }
